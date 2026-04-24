@@ -55,7 +55,7 @@ function detectClaudeCode(): ClaudeCodeInfo {
   try {
     const pkg = require_.resolve('@anthropic-ai/claude-code/package.json')
     ver = JSON.parse(fs.readFileSync(pkg, 'utf-8')).version || ver
-  } catch {}
+  } catch { /* version detection is best-effort */ }
 
   _cached = { executablePath: cliPath, version: ver, source: 'bundled' }
   console.log(`[claude-sdk] Using bundled Claude Code (${ver}): ${cliPath}`)
