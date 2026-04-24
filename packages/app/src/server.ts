@@ -348,74 +348,79 @@ function handleWorkflowConnection(ws: WebSocket): void {
     const projectDir = data.projectDir as string
     const backendType = (data.backendType as string) || 'claude_code'
 
-    if (data.type === 'workflow.start') {
-      // Default config (can be loaded from project later)
-      const config: WorkflowConfig = {
-        max_refine: 2, max_pivot: 1, max_attempts: 2,
-        coordinator_timeout: 300, poll_interval: 2000,
-        auto_start: false, agents: {},
-      }
+    try {
+      if (data.type === 'workflow.start') {
+        // Default config (can be loaded from project later)
+        const config: WorkflowConfig = {
+          max_refine: 2, max_pivot: 1, max_attempts: 2,
+          coordinator_timeout: 300, poll_interval: 2000,
+          auto_start: false, agents: {},
+        }
 
-      // Create and start orchestrator
-      let orch = workflowOrchestrators.get(projectId)
-      if (orch) orch.stop()
+        // Create and start orchestrator
+        let orch = workflowOrchestrators.get(projectId)
+        if (orch) orch.stop()
 
-      orch = new WorkflowOrchestrator(projectId, projectDir, config, backendType)
+        orch = new WorkflowOrchestrator(projectId, projectDir, config, backendType)
 
-      // Import existing session IDs from UI (so auto-mode resumes manual sessions)
-      const existingSessionIds = data.sessionIds as Record<string, string> | undefined
-      if (existingSessionIds) orch.setSessionIds(existingSessionIds)
+        // Import existing session IDs from UI (so auto-mode resumes manual sessions)
+        const existingSessionIds = data.sessionIds as Record<string, string> | undefined
+        if (existingSessionIds) orch.setSessionIds(existingSessionIds)
 
-      // Register this UI client for auto-mode broadcasts
-      orch.uiClients.add(ws)
-      registeredProjectId = projectId
-
-      workflowOrchestrators.set(projectId, orch)
-      await orch.start()
-    }
-
-    else if (data.type === 'workflow.subscribe') {
-      // UI client wants to receive auto messages for a project (without starting)
-      const orch = workflowOrchestrators.get(projectId)
-      if (orch) {
+        // Register this UI client for auto-mode broadcasts
         orch.uiClients.add(ws)
         registeredProjectId = projectId
-        // Send current state
-        const statuses: Record<string, string> = {}
-        for (const [name, info] of Object.entries(orch.getState())) {
-          statuses[name] = info.status?.status || 'idle'
+
+        workflowOrchestrators.set(projectId, orch)
+        await orch.start()
+      }
+
+      else if (data.type === 'workflow.subscribe') {
+        // UI client wants to receive auto messages for a project (without starting)
+        const orch = workflowOrchestrators.get(projectId)
+        if (orch) {
+          orch.uiClients.add(ws)
+          registeredProjectId = projectId
+          // Send current state
+          const statuses: Record<string, string> = {}
+          for (const [name, info] of Object.entries(orch.getState())) {
+            statuses[name] = info.status?.status || 'idle'
+          }
+          ws.send(JSON.stringify({ type: 'auto.pipeline', status: 'running', agents: statuses }))
         }
-        ws.send(JSON.stringify({ type: 'auto.pipeline', status: 'running', agents: statuses }))
       }
-    }
 
-    else if (data.type === 'workflow.stop') {
-      const orch = workflowOrchestrators.get(projectId)
-      if (orch) {
-        orch.uiClients.delete(ws)
-        orch.stop()
-        workflowOrchestrators.delete(projectId)
+      else if (data.type === 'workflow.stop') {
+        const orch = workflowOrchestrators.get(projectId)
+        if (orch) {
+          orch.uiClients.delete(ws)
+          orch.stop()
+          workflowOrchestrators.delete(projectId)
+        }
+        ws.send(JSON.stringify({ type: 'auto.pipeline', status: 'stopped' }))
       }
-      ws.send(JSON.stringify({ type: 'auto.pipeline', status: 'stopped' }))
-    }
 
-    else if (data.type === 'workflow.pause') {
-      workflowOrchestrators.get(projectId)?.pause()
-    }
-
-    else if (data.type === 'workflow.resume') {
-      workflowOrchestrators.get(projectId)?.resume()
-    }
-
-    else if (data.type === 'workflow.intervene') {
-      await workflowOrchestrators.get(projectId)?.intervene(data.message as string)
-    }
-
-    else if (data.type === 'workflow.get_state') {
-      const orch = workflowOrchestrators.get(projectId)
-      if (orch) {
-        ws.send(JSON.stringify({ type: 'auto.pipeline', agents: orch.getState() }))
+      else if (data.type === 'workflow.pause') {
+        workflowOrchestrators.get(projectId)?.pause()
       }
+
+      else if (data.type === 'workflow.resume') {
+        workflowOrchestrators.get(projectId)?.resume()
+      }
+
+      else if (data.type === 'workflow.intervene') {
+        await workflowOrchestrators.get(projectId)?.intervene(data.message as string)
+      }
+
+      else if (data.type === 'workflow.get_state') {
+        const orch = workflowOrchestrators.get(projectId)
+        if (orch) {
+          ws.send(JSON.stringify({ type: 'auto.pipeline', agents: orch.getState() }))
+        }
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown workflow error'
+      try { ws.send(JSON.stringify({ type: 'auto.error', error: msg })) } catch { /* ws closed */ }
     }
   })
 

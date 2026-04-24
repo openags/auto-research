@@ -66,6 +66,7 @@ const SECTION_FOLDERS: Record<string, string> = {
   experiments: 'experiments',
   manuscript: 'manuscript',
   review: 'review',
+  references: 'reference',
   rebuttal: 'rebuttal',
   presentation: 'presentation',
 }
@@ -322,6 +323,7 @@ interface ProjectData {
   name: string
   description: string
   stage: string
+  workspace: string
 }
 
 interface SectionMeta {
@@ -576,13 +578,11 @@ export default function Project(): React.ReactElement {
       .finally(() => setLoading(false))
   }, [id])
 
-  // Fetch backend type and workspace dir from config
-  const [workspaceDir, setWorkspaceDir] = useState('')
+  // Fetch backend type from config
   useEffect(() => {
-    api.get<{ default_backend: { type: string }; workspace_dir: string }>('/api/config/')
+    api.get<{ default_backend: { type: string } }>('/api/config/')
       .then((cfg) => {
         setBackendType(cfg.default_backend.type || 'builtin')
-        setWorkspaceDir(cfg.workspace_dir || '')
       })
       .catch(() => {})
   }, [])
@@ -592,11 +592,11 @@ export default function Project(): React.ReactElement {
 
   // Compute the working directory for the terminal
   const terminalCwd = useMemo(() => {
-    if (!project || !workspaceDir) return ''
-    const baseDir = `${workspaceDir}/projects/${project.id}`
+    if (!project) return ''
+    const baseDir = project.workspace
     const subfolder = SECTION_FOLDERS[section || 'pi'] || ''
     return subfolder ? `${baseDir}/${subfolder}` : baseDir
-  }, [project, section, workspaceDir])
+  }, [project, section])
 
   const terminalSessionId = useMemo(() => {
     return `${id || 'unknown'}:${section || 'pi'}`
@@ -677,7 +677,7 @@ export default function Project(): React.ReactElement {
               type: 'chat',
               provider: backendType,
               command: triggerMsg,
-              cwd: workspaceDir ? `${workspaceDir}/projects/${id}` : '',
+              cwd: project?.workspace || '',
               sessionId: agsSessionIdRef.current || undefined,
               permissionMode: 'bypassPermissions',
             }))
@@ -710,9 +710,9 @@ export default function Project(): React.ReactElement {
   }
   /** Start auto — send @@AUTO_MODE_START via normal chat + start orchestrator for pipeline */
   const handleAutoStart = () => {
-    if (!project || !workspaceDir) return
+    if (!project) return
     // Start orchestrator for pipeline monitoring + sub-agent dispatch
-    const projectDir = `${workspaceDir}/projects/${project.id}`
+    const projectDir = project.workspace
     const store = loadThreadStore()
     const sessionIds: Record<string, string> = {}
     for (const mod of ['literature', 'proposal', 'experiments', 'manuscript', 'review', 'pi', 'ags']) {
@@ -934,7 +934,13 @@ export default function Project(): React.ReactElement {
   }
 
   const activeSection = section || 'pi'
-  const meta = SECTION_META[activeSection] || SECTION_META.sessions
+  const meta = SECTION_META[activeSection] || {
+    Icon: Construction,
+    title: activeSection,
+    description: '',
+    color: '#8b95a5',
+    chatEnabled: false,
+  }
   const chatKey = useMemo(() => getChatKey(id || 'unknown', activeSection), [id, activeSection])
 
   useEffect(() => {
@@ -1027,7 +1033,7 @@ export default function Project(): React.ReactElement {
       // Send the message via WebSocket after a brief delay (let the UI settle)
       window.setTimeout(() => {
         if (cliWsRef.current?.readyState === WebSocket.OPEN) {
-          const agentDir = `${workspaceDir}/projects/${id}/${section}`
+          const agentDir = project ? `${project.workspace}/${section}` : ''
           cliWsRef.current.send(JSON.stringify({
             type: 'chat',
             provider: backendType,
@@ -1041,7 +1047,7 @@ export default function Project(): React.ReactElement {
 
     window.addEventListener('openags-chat-paper', handler)
     return () => window.removeEventListener('openags-chat-paper', handler)
-  }, [id, navigate, backendType, workspaceDir])
+  }, [id, navigate, backendType, project])
 
   const activeThread = threads.find((t) => t.id === threadId) || threads[0]
   const allMessages = activeThread?.messages || []

@@ -1,12 +1,98 @@
 /**
  * Claude Code provider — uses @anthropic-ai/claude-agent-sdk.
  *
- * Sends structured messages (text, tool_use with details, tool_result, thinking).
+ * Resolution strategy:
+ *   1. Global `claude` CLI (user-installed) — preferred, no extra runtime needed
+ *   2. Bundled @anthropic-ai/claude-code cli.js — fallback, runs via ELECTRON_RUN_AS_NODE
  */
 
+import * as fs from 'fs'
+import * as path from 'path'
+import { execSync } from 'child_process'
+import { createRequire } from 'module'
 import { WsWriter } from './types'
 
 const activeSessions = new Map<string, { instance: any; abort: () => void }>()
+
+// ── Claude Code Detection ────────────────────────────
+
+interface ClaudeCodeInfo {
+  executablePath: string
+  useElectronNode: boolean
+  version: string
+  source: 'global' | 'bundled'
+}
+
+let _cached: ClaudeCodeInfo | null = null
+
+function detectClaudeCode(): ClaudeCodeInfo {
+  if (_cached) return _cached
+
+  // 1. Check global claude CLI
+  try {
+    const cmd = process.platform === 'win32' ? 'where claude' : 'which claude'
+    const raw = execSync(cmd, { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+    const globalPath = raw.split(/\r?\n/)[0].trim()
+    if (globalPath && fs.existsSync(globalPath)) {
+      const ver = execSync(`"${globalPath}" --version`, { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+      _cached = { executablePath: globalPath, useElectronNode: false, version: ver, source: 'global' }
+      console.log(`[claude-sdk] Using global Claude Code (${ver}): ${globalPath}`)
+      return _cached
+    }
+  } catch { /* not installed globally */ }
+
+  // 2. Bundled @anthropic-ai/claude-code
+  const bundledPath = resolveBundledCli()
+  const ver = getBundledVersion()
+  _cached = { executablePath: bundledPath, useElectronNode: true, version: ver, source: 'bundled' }
+  console.log(`[claude-sdk] Using bundled Claude Code (${ver}): ${bundledPath}`)
+  return _cached
+}
+
+function resolveBundledCli(): string {
+  // Packaged app: ASAR-unpacked path
+  if (process.resourcesPath) {
+    const unpacked = path.join(
+      process.resourcesPath, 'app.asar.unpacked',
+      'node_modules', '@anthropic-ai', 'claude-code', 'cli.js',
+    )
+    if (fs.existsSync(unpacked)) return unpacked
+  }
+
+  // Dev mode: resolve through node_modules
+  const require_ = createRequire(import.meta.url)
+  try {
+    const pkg = require_.resolve('@anthropic-ai/claude-code/package.json')
+    return path.join(path.dirname(pkg), 'cli.js')
+  } catch {
+    const sdk = require_.resolve('@anthropic-ai/claude-agent-sdk')
+    return path.join(path.dirname(sdk), 'cli.js')
+  }
+}
+
+function getBundledVersion(): string {
+  try {
+    const require_ = createRequire(import.meta.url)
+    const pkg = require_.resolve('@anthropic-ai/claude-code/package.json')
+    const json = JSON.parse(fs.readFileSync(pkg, 'utf-8'))
+    return json.version || 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/** Expose detection result for Settings / health-check */
+export function getClaudeCodeInfo(): { source: string; version: string; path: string } {
+  const info = detectClaudeCode()
+  return { source: info.source, version: info.version, path: info.executablePath }
+}
+
+/** Force re-detection (e.g. after user installs claude globally) */
+export function resetClaudeCodeDetection(): void {
+  _cached = null
+}
+
+// ── SDK Query ────────────────────────────────────────
 
 export async function queryClaudeSDK(
   command: string,
@@ -19,15 +105,26 @@ export async function queryClaudeSDK(
   writer: WsWriter,
 ): Promise<void> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk')
+  const cc = detectClaudeCode()
 
   const sdkOptions: Record<string, any> = {
+    pathToClaudeCodeExecutable: cc.executablePath,
     model: options.model || 'sonnet',
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     tools: { type: 'preset', preset: 'claude_code' },
     settingSources: ['project', 'user', 'local'],
   }
 
-  if (options.cwd) sdkOptions.cwd = options.cwd
+  // Bundled cli.js needs Electron's Node to run
+  if (cc.useElectronNode) {
+    sdkOptions.executable = process.execPath
+    process.env.ELECTRON_RUN_AS_NODE = '1'
+  }
+
+  if (options.cwd) {
+    if (!fs.existsSync(options.cwd)) fs.mkdirSync(options.cwd, { recursive: true })
+    sdkOptions.cwd = options.cwd
+  }
   if (options.sessionId) sdkOptions.resume = options.sessionId
 
   if (options.permissionMode === 'bypassPermissions' || options.permissionMode === 'dangerously-skip-permissions') {
@@ -40,7 +137,6 @@ export async function queryClaudeSDK(
     const queryInstance = query({ prompt: command, options: sdkOptions })
 
     for await (const message of queryInstance) {
-      // Capture session ID
       if ((message as any).session_id && !capturedSessionId) {
         capturedSessionId = (message as any).session_id
         writer.sendSessionCreated(capturedSessionId!)
@@ -52,7 +148,6 @@ export async function queryClaudeSDK(
 
       const msg = message as any
 
-      // Assistant message: content blocks (text, tool_use, thinking)
       if (msg.type === 'assistant' && msg.message?.content) {
         const content = msg.message.content
         if (Array.isArray(content)) {
@@ -60,18 +155,15 @@ export async function queryClaudeSDK(
             if (block.type === 'text') {
               writer.sendText(block.text)
             } else if (block.type === 'tool_use') {
-              // Send detailed tool info: name + summarized input
               const detail = formatToolInput(block.name, block.input)
               writer.send({ type: 'tool_use', name: block.name, toolId: block.id, detail })
             } else if (block.type === 'thinking') {
-              // Optionally send thinking (collapsed in UI)
               writer.send({ type: 'thinking', content: block.thinking })
             }
           }
         }
       }
 
-      // Tool result (from user messages containing tool_result blocks)
       if (msg.type === 'user' && Array.isArray(msg.message?.content)) {
         for (const block of msg.message.content) {
           if (block.type === 'tool_result') {
@@ -84,7 +176,6 @@ export async function queryClaudeSDK(
         }
       }
 
-      // Final result — text was already sent via assistant messages above
       if (msg.type === 'result') {
         const usage = msg.usage || {}
         writer.sendResult(
@@ -101,7 +192,6 @@ export async function queryClaudeSDK(
   }
 }
 
-/** Format tool input into a human-readable one-liner */
 function formatToolInput(name: string, input: any): string {
   if (!input || typeof input !== 'object') return ''
   switch (name) {
@@ -113,7 +203,6 @@ function formatToolInput(name: string, input: any): string {
     case 'Grep': return `${input.pattern || ''} ${input.path || ''}`
     case 'Agent': return input.description || input.prompt?.substring(0, 60) || ''
     default: {
-      // Generic: show first string value
       const firstVal = Object.values(input).find(v => typeof v === 'string')
       return typeof firstVal === 'string' ? firstVal.substring(0, 80) : ''
     }

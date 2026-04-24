@@ -153,8 +153,20 @@ export function createConfigRoutes(configPath?: string): Router {
     const execAsync = promisify(execFile)
 
     const results: Record<string, boolean> = {}
+    const details: Record<string, { source: string; version: string }> = {}
+
+    // Claude Code: use provider detection (global → bundled fallback)
+    try {
+      const { getClaudeCodeInfo } = await import('../providers/claude-sdk.js')
+      const info = getClaudeCodeInfo()
+      results['claude_code'] = true
+      details['claude_code'] = { source: info.source, version: info.version }
+    } catch {
+      results['claude_code'] = false
+    }
+
+    // Other CLIs: simple version check
     const checks: [string, string, string[]][] = [
-      ['claude_code', 'claude', ['--version']],
       ['codex', 'codex', ['--version']],
       ['gemini_cli', 'gemini', ['--version']],
     ]
@@ -176,7 +188,7 @@ export function createConfigRoutes(configPath?: string): Router {
       results['copilot'] = false
     }
 
-    res.json({ results })
+    res.json({ results, details })
   })
 
   // Check if API keys are configured

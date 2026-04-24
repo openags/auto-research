@@ -12,6 +12,11 @@ files:
   - out/**/*
   - resources/**/*
 
+# Unpack from ASAR so child_process.spawn can access them
+asarUnpack:
+  - "node_modules/@anthropic-ai/claude-code/**/*"
+  - "node_modules/node-pty/**/*"
+
 mac:
   category: public.app-category.developer-tools
   target:
