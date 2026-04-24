@@ -12,10 +12,15 @@ files:
   - out/**/*
   - resources/**/*
 
-# Unpack from ASAR so child_process.spawn can access them
-asarUnpack:
-  - "node_modules/@anthropic-ai/claude-code/**/*"
-  - "node_modules/node-pty/**/*"
+# Copy Claude Code CLI to resources/ (outside ASAR) so it can be spawned
+extraResources:
+  - from: "node_modules/@anthropic-ai/claude-code"
+    to: "claude-code"
+    filter:
+      - "cli.js"
+      - "vendor/**/*"
+      - "package.json"
+      - "LICENSE.md"
 
 mac:
   category: public.app-category.developer-tools

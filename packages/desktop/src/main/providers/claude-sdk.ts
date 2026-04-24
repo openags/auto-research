@@ -50,13 +50,10 @@ function detectClaudeCode(): ClaudeCodeInfo {
 }
 
 function resolveBundledCli(): string {
-  // Packaged app: ASAR-unpacked path
+  // Packaged app: extraResources copies claude-code to resources/claude-code/
   if (process.resourcesPath) {
-    const unpacked = path.join(
-      process.resourcesPath, 'app.asar.unpacked',
-      'node_modules', '@anthropic-ai', 'claude-code', 'cli.js',
-    )
-    if (fs.existsSync(unpacked)) return unpacked
+    const extraRes = path.join(process.resourcesPath, 'claude-code', 'cli.js')
+    if (fs.existsSync(extraRes)) return extraRes
   }
 
   // Dev mode: resolve through node_modules
@@ -71,11 +68,18 @@ function resolveBundledCli(): string {
 }
 
 function getBundledVersion(): string {
+  // Check extraResources path first (packaged app)
+  if (process.resourcesPath) {
+    const pkgPath = path.join(process.resourcesPath, 'claude-code', 'package.json')
+    try {
+      return JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version || 'unknown'
+    } catch { /* fall through */ }
+  }
+  // Dev mode
   try {
     const require_ = createRequire(import.meta.url)
     const pkg = require_.resolve('@anthropic-ai/claude-code/package.json')
-    const json = JSON.parse(fs.readFileSync(pkg, 'utf-8'))
-    return json.version || 'unknown'
+    return JSON.parse(fs.readFileSync(pkg, 'utf-8')).version || 'unknown'
   } catch {
     return 'unknown'
   }
