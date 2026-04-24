@@ -28,15 +28,18 @@ let _cached: ClaudeCodeInfo | null = null
 function detectClaudeCode(): ClaudeCodeInfo {
   if (_cached) return _cached
 
-  // 1. Check global claude CLI
+  // 1. Check global claude CLI (skip node_modules shims)
   try {
     const cmd = process.platform === 'win32' ? 'where claude' : 'which claude'
     const raw = execSync(cmd, { encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
-    const globalPath = raw.split(/\r?\n/)[0].trim()
-    if (globalPath && fs.existsSync(globalPath)) {
-      const ver = execSync(`"${globalPath}" --version`, { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
-      _cached = { executablePath: globalPath, useElectronNode: false, version: ver, source: 'global' }
-      console.log(`[claude-sdk] Using global Claude Code (${ver}): ${globalPath}`)
+    const candidates = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+    for (const candidate of candidates) {
+      // Skip node_modules/.bin shims — they're shell scripts, not native binaries
+      if (candidate.includes('node_modules')) continue
+      if (!fs.existsSync(candidate)) continue
+      const ver = execSync(`"${candidate}" --version`, { encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] }).trim()
+      _cached = { executablePath: candidate, useElectronNode: false, version: ver, source: 'global' }
+      console.log(`[claude-sdk] Using global Claude Code (${ver}): ${candidate}`)
       return _cached
     }
   } catch { /* not installed globally */ }
@@ -110,6 +113,7 @@ export async function queryClaudeSDK(
 ): Promise<void> {
   const { query } = await import('@anthropic-ai/claude-agent-sdk')
   const cc = detectClaudeCode()
+  console.log(`[claude-sdk] query: executable=${cc.executablePath}, source=${cc.source}, useElectronNode=${cc.useElectronNode}`)
 
   const sdkOptions: Record<string, any> = {
     pathToClaudeCodeExecutable: cc.executablePath,

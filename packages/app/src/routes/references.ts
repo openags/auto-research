@@ -10,6 +10,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
+import { resolveProjectWorkspace } from '../research/project.js'
 
 // ── Types ────────────────────────────────────────────
 
@@ -130,12 +131,10 @@ function param(val: string | string[]): string {
 
 export function createReferencesRoutes(workspaceDir?: string): Router {
   const router = Router()
-  const baseDir = path.join(workspaceDir || path.join(os.homedir(), '.openags'), 'projects')
+  const workspaceRoot = workspaceDir || path.join(os.homedir(), '.openags')
 
   function resolveProjectDir(projectId: string): string | null {
-    const dir = path.join(baseDir, projectId)
-    if (fs.existsSync(path.join(dir, '.openags', 'meta.yaml'))) return dir
-    return null
+    return resolveProjectWorkspace(workspaceRoot, projectId)
   }
 
   // List all references

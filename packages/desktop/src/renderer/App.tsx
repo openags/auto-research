@@ -16,6 +16,7 @@ import {
   MessageSquareReply,
   Presentation,
   Zap,
+  Cpu,
   Settings as SettingsIcon,
   User,
   LayoutDashboard,
@@ -32,7 +33,8 @@ import {
 import Dashboard from './pages/Dashboard'
 import Project from './pages/Project'
 import Settings from './pages/Settings'
-import Skills from './pages/Skills'
+import RobotSkills from './pages/RobotSkills'
+import AgentSkills from './pages/AgentSkills'
 import Logs from './pages/Logs'
 import Login from './pages/Login'
 import { api, AuthUser } from './services/api'
@@ -756,7 +758,8 @@ function AppLayout({ user, onLogout }: { user: AuthUser; onLogout: () => void })
         {/* Bottom nav */}
         <div style={{ borderTop: '1px solid var(--border)', padding: '6px 8px' }}>
           {[
-            { key: '/skills', Icon: Zap, label: 'Skills' },
+            { key: '/robot-skills', Icon: Cpu, label: 'Robot Skills' },
+            { key: '/agent-skills', Icon: Zap, label: 'Agent Skills' },
             { key: '/settings', Icon: SettingsIcon, label: 'Settings' },
           ].map((item) => {
             const active = isActive(item.key)
@@ -892,7 +895,8 @@ function AppLayout({ user, onLogout }: { user: AuthUser; onLogout: () => void })
             <Route path="/" element={<Dashboard />} />
             <Route path="/project/:id/:section/:threadId" element={<Project />} />
             <Route path="/project/:id/:section?" element={<Project />} />
-            <Route path="/skills" element={<Skills />} />
+            <Route path="/robot-skills" element={<RobotSkills />} />
+            <Route path="/agent-skills" element={<AgentSkills />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/logs" element={<Logs />} />
             <Route path="*" element={<Navigate to="/" />} />
