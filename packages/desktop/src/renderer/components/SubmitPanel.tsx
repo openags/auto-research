@@ -28,11 +28,17 @@ interface FileEntry {
   children: FileEntry[]
 }
 
+interface LatexError {
+  message: string
+  line: number | null
+  file: string | null
+}
+
 interface CompileResult {
   success: boolean
   pdf_path: string | null
   log: string
-  errors: string[]
+  errors: LatexError[]
 }
 
 const MODULES: Array<{ key: ModuleKey; label: string; Icon: typeof FileText; color: string }> = [
@@ -100,15 +106,23 @@ export default function SubmitPanel({ projectId, projectName }: SubmitPanelProps
       setCompileResult(result)
       setShowLog(true)
       if (result.success) {
-        message.success('Compiled to PDF')
+        if (result.errors.length > 0) {
+          message.warning(`Compiled with ${result.errors.length} warning(s)`)
+        } else {
+          message.success('Compiled to PDF')
+        }
       } else {
-        message.error(result.errors[0] || 'Compilation failed')
+        const firstErr = result.errors[0]
+        const errMsg = firstErr
+          ? `${firstErr.file || 'main.tex'}${firstErr.line ? `:${firstErr.line}` : ''} — ${firstErr.message}`
+          : 'Compilation failed'
+        message.error(errMsg)
       }
       await refreshTree()
     } catch (err) {
       const detail = err instanceof Error ? err.message : 'Unknown error'
       message.error(`Compile failed: ${detail}`)
-      setCompileResult({ success: false, pdf_path: null, log: detail, errors: [detail] })
+      setCompileResult({ success: false, pdf_path: null, log: detail, errors: [{ message: detail, line: null, file: null }] })
       setShowLog(true)
     } finally {
       setCompiling(false)
@@ -302,18 +316,22 @@ export default function SubmitPanel({ projectId, projectName }: SubmitPanelProps
       {/* Compile result */}
       {compileResult && (
         <div style={{
-          border: `1px solid ${compileResult.success ? '#22c55e40' : '#ef444440'}`,
+          border: `1px solid ${compileResult.success && compileResult.errors.length === 0 ? '#22c55e40' : compileResult.success ? '#f59e0b40' : '#ef444440'}`,
           borderRadius: 12,
-          background: compileResult.success ? '#f0fdf4' : '#fef2f2',
+          background: compileResult.success && compileResult.errors.length === 0 ? '#f0fdf4' : compileResult.success ? '#fffbeb' : '#fef2f2',
           padding: '12px 16px',
           marginBottom: 18,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{
               fontSize: 13, fontWeight: 600,
-              color: compileResult.success ? '#16a34a' : '#dc2626',
+              color: compileResult.success && compileResult.errors.length === 0 ? '#16a34a' : compileResult.success ? '#d97706' : '#dc2626',
             }}>
-              {compileResult.success ? '✓ Compilation succeeded' : '✗ Compilation failed'}
+              {compileResult.success && compileResult.errors.length === 0
+                ? '✓ Compilation succeeded'
+                : compileResult.success
+                  ? `⚠ Compiled with ${compileResult.errors.length} error(s) — PDF may be incomplete`
+                  : `✗ Compilation failed — ${compileResult.errors.length} error(s)`}
             </span>
             <span style={{ flex: 1 }} />
             <a onClick={() => setShowLog((v) => !v)} style={{ fontSize: 12, cursor: 'pointer' }}>
@@ -321,17 +339,38 @@ export default function SubmitPanel({ projectId, projectName }: SubmitPanelProps
             </a>
           </div>
           {compileResult.errors.length > 0 && (
-            <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 12, color: '#dc2626' }}>
-              {compileResult.errors.slice(0, 5).map((e, i) => (
-                <li key={i} style={{ fontFamily: "'SF Mono', monospace" }}>{e}</li>
+            <div style={{ marginTop: 10, borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border)', background: '#1e293b' }}>
+              <div style={{ padding: '6px 12px', fontSize: 11, fontWeight: 600, color: '#94a3b8', borderBottom: '1px solid #334155', background: '#0f172a' }}>
+                {compileResult.errors.length} error{compileResult.errors.length > 1 ? 's' : ''} found
+              </div>
+              {compileResult.errors.slice(0, 10).map((e, i) => (
+                <div key={i} style={{
+                  padding: '6px 12px', fontSize: 12,
+                  fontFamily: "'SF Mono', Consolas, monospace",
+                  borderBottom: i < compileResult.errors.length - 1 ? '1px solid #334155' : 'none',
+                  display: 'flex', gap: 8, alignItems: 'baseline',
+                }}>
+                  <span style={{ color: '#ef4444', flexShrink: 0 }}>●</span>
+                  {(e.file || e.line) && (
+                    <span style={{ color: '#60a5fa', flexShrink: 0, whiteSpace: 'nowrap' }}>
+                      {e.file || 'main.tex'}{e.line ? `:${e.line}` : ''}
+                    </span>
+                  )}
+                  <span style={{ color: '#e2e8f0' }}>{e.message}</span>
+                </div>
               ))}
-            </ul>
+              {compileResult.errors.length > 10 && (
+                <div style={{ padding: '4px 12px', fontSize: 11, color: '#64748b' }}>
+                  … and {compileResult.errors.length - 10} more
+                </div>
+              )}
+            </div>
           )}
           {showLog && compileResult.log && (
             <pre style={{
               marginTop: 10, padding: 12, borderRadius: 6,
               background: '#1e293b', color: '#e2e8f0',
-              fontSize: 11, fontFamily: "'SF Mono', monospace",
+              fontSize: 11, fontFamily: "'SF Mono', Consolas, monospace",
               maxHeight: 320, overflow: 'auto', whiteSpace: 'pre-wrap',
             }}>
               {compileResult.log}

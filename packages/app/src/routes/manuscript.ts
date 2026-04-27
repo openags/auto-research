@@ -20,6 +20,59 @@ function param(val: string | string[]): string {
   return Array.isArray(val) ? val[0] : val
 }
 
+interface LatexError {
+  message: string
+  line: number | null
+  file: string | null
+}
+
+function parseLatexErrors(log: string): LatexError[] {
+  const errors: LatexError[] = []
+  const lines = log.split('\n')
+  // Track which file TeX is currently processing via (file.tex patterns
+  const fileStack: string[] = []
+
+  for (let i = 0; i < lines.length; i++) {
+    // Track file context: TeX logs (path/file.tex when entering a file
+    const opens = lines[i].match(/\(([^()]*\.tex)/g)
+    if (opens) {
+      for (const m of opens) fileStack.push(m.slice(1))
+    }
+    const closes = (lines[i].match(/\)/g) || []).length
+    for (let c = 0; c < closes && fileStack.length > 0; c++) fileStack.pop()
+
+    if (!lines[i].startsWith('!')) continue
+
+    const msg = lines[i].slice(2).trim()
+    let line: number | null = null
+    let file: string | null = fileStack.length > 0 ? fileStack[fileStack.length - 1] : null
+
+    // Look ahead for `l.NNN` line indicator
+    for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+      const lm = lines[j].match(/^l\.(\d+)\s/)
+      if (lm) {
+        line = parseInt(lm[1], 10)
+        break
+      }
+    }
+
+    // Normalize file path to just the basename for display
+    if (file) {
+      const base = file.replace(/\\/g, '/').split('/').pop()
+      if (base) file = base
+    }
+
+    // Deduplicate consecutive identical messages
+    const last = errors[errors.length - 1]
+    if (last && last.message === msg && last.line === line && last.file === file) continue
+
+    errors.push({ message: msg, line, file })
+    if (errors.length >= 20) break
+  }
+
+  return errors
+}
+
 interface FileEntry {
   name: string
   path: string
@@ -252,48 +305,65 @@ export function createManuscriptRoutes(workspaceDir?: string): Router {
     const texFile = path.join(dir, texPath)
     if (!fs.existsSync(texFile)) { res.status(404).json({ error: `${texPath} not found` }); return }
 
-    try {
-      // Try pdflatex first, fall back to xelatex
-      let compiler = 'pdflatex'
-      try { await execFileAsync('which', ['pdflatex']) } catch {
-        try { await execFileAsync('which', ['xelatex']); compiler = 'xelatex' } catch {
-          res.json({ success: false, log: 'No LaTeX compiler found. Install TeX Live or BasicTeX.', errors: ['pdflatex/xelatex not found'], pdf_path: null })
-          return
-        }
+    // Try pdflatex first, fall back to xelatex
+    const whichCmd = process.platform === 'win32' ? 'where' : 'which'
+    let compiler = 'pdflatex'
+    try { await execFileAsync(whichCmd, ['pdflatex']) } catch {
+      try { await execFileAsync(whichCmd, ['xelatex']); compiler = 'xelatex' } catch {
+        res.json({ success: false, log: 'No LaTeX compiler found. Install TeX Live or BasicTeX.', errors: [{ message: 'pdflatex/xelatex not found in PATH', line: null, file: null }], pdf_path: null })
+        return
       }
+    }
 
+    // Run compiler — nonstopmode may exit non-zero but still produce output
+    let log = ''
+    try {
       const { stdout, stderr } = await execFileAsync(compiler, [
         '-interaction=nonstopmode',
         '-synctex=1',
         '-output-directory=' + dir,
         texFile,
       ], { cwd: dir, timeout: 60000, maxBuffer: 5 * 1024 * 1024 })
-
-      const log = stdout + '\n' + stderr
-      const baseName = path.basename(texPath, '.tex')
-      const pdfPath = `${baseName}.pdf`
-      const pdfFull = path.join(dir, pdfPath)
-
-      if (fs.existsSync(pdfFull)) {
-        // Run bibtex + second pass if references exist
-        const bibFile = path.join(dir, 'references.bib')
-        if (fs.existsSync(bibFile)) {
-          try {
-            await execFileAsync('bibtex', [path.join(dir, baseName)], { cwd: dir, timeout: 30000 })
-            await execFileAsync(compiler, ['-interaction=nonstopmode', '-output-directory=' + dir, texFile], { cwd: dir, timeout: 60000, maxBuffer: 5 * 1024 * 1024 })
-          } catch { /* bibtex errors are non-fatal */ }
-        }
-
-        res.json({ success: true, pdf_path: pdfPath, log, errors: [] })
-      } else {
-        // Extract errors from log
-        const errors = log.split('\n').filter(l => l.startsWith('!')).slice(0, 10)
-        res.json({ success: false, pdf_path: null, log, errors })
-      }
+      log = stdout + '\n' + stderr
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Compilation failed'
-      const stderr = (err as NodeJS.ErrnoException & { stderr?: string }).stderr || ''
-      res.json({ success: false, pdf_path: null, log: msg + '\n' + stderr, errors: [msg] })
+      const e = err as Error & { stdout?: string; stderr?: string }
+      log = (e.stdout || '') + '\n' + (e.stderr || '')
+      if (!log.trim()) log = e.message || 'Compilation failed'
+    }
+
+    const baseName = path.basename(texPath, '.tex')
+    const pdfPath = `${baseName}.pdf`
+    const pdfFull = path.join(dir, pdfPath)
+    const errors = parseLatexErrors(log)
+
+    if (fs.existsSync(pdfFull)) {
+      // Check if bibliography is needed by looking for \bibdata in .aux
+      const auxFile = path.join(dir, `${baseName}.aux`)
+      let needsBibtex = false
+      if (fs.existsSync(auxFile)) {
+        const auxContent = fs.readFileSync(auxFile, 'utf-8')
+        needsBibtex = auxContent.includes('\\bibdata{') || auxContent.includes('\\citation{')
+      }
+
+      if (needsBibtex) {
+        // Full LaTeX build: pdflatex → bibtex → pdflatex → pdflatex
+        // bibtex may exit non-zero for warnings (repeated entries etc.) but still produce valid .bbl
+        try { await execFileAsync('bibtex', [path.join(dir, baseName)], { cwd: dir, timeout: 30000 }) } catch { /* non-fatal */ }
+        try {
+          await execFileAsync(compiler, ['-interaction=nonstopmode', '-output-directory=' + dir, texFile], { cwd: dir, timeout: 60000, maxBuffer: 5 * 1024 * 1024 })
+          const final = await execFileAsync(compiler, ['-interaction=nonstopmode', '-output-directory=' + dir, texFile], { cwd: dir, timeout: 60000, maxBuffer: 5 * 1024 * 1024 })
+          log = final.stdout + '\n' + final.stderr
+        } catch (e) {
+          const ex = e as Error & { stdout?: string; stderr?: string }
+          if (ex.stdout) log = ex.stdout + '\n' + (ex.stderr || '')
+        }
+      }
+
+      const finalErrors = parseLatexErrors(log)
+      const hasWarnings = finalErrors.length > 0
+      res.json({ success: true, pdf_path: pdfPath, log, errors: hasWarnings ? finalErrors : [] })
+    } else {
+      res.json({ success: false, pdf_path: null, log, errors: errors.length > 0 ? errors : [{ message: 'Compilation failed — no PDF produced', line: null, file: null }] })
     }
   })
 
